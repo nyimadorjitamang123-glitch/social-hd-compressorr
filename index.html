@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#10131a">
+<title>Social HD Compressor</title>
+<style>
+:root{color-scheme:dark;--bg:#10131a;--panel:#1b202b;--line:#343b49;--text:#f4f6fb;--muted:#aeb7c7;--accent:#7c9cff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:720px;margin:auto;padding:22px 16px 44px}h1{font-size:27px;margin:8px 0}p{line-height:1.45;color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;margin:16px 0}
+label{display:block;font-weight:650;margin:14px 0 7px}input,select,button{font:inherit;width:100%;border-radius:12px;padding:13px;border:1px solid var(--line);background:#111620;color:var(--text)}
+input[type=file]{padding:12px}button{border:0;background:var(--accent);color:#081020;font-weight:800;margin-top:15px}button:disabled{opacity:.45}small,.hint{font-size:13px;color:var(--muted)}progress{width:100%;height:14px;margin-top:10px}#status{white-space:pre-wrap;line-height:1.45;color:#dce4f5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:var(--muted);font-size:12px}a{color:#b9c9ff;overflow-wrap:anywhere}video{width:100%;max-height:360px;background:#000;border-radius:12px;margin-top:12px}.warning{color:#ffd58a}
+</style>
+</head>
+<body>
+<main>
+  <span class="pill">Runs in your browser</span>
+  <h1>Social HD Compressor</h1>
+  <p>Prepare videos for TikTok, Instagram Reels and Facebook Reels. Processing happens on your device after the encoder loads; your selected video is not uploaded to a server by this page.</p>
+  <div class="panel">
+    <label for="file">1. Choose a video</label>
+    <input id="file" type="file" accept="video/*">
+    <p id="fileInfo" class="hint">Tip: start with a short 10–30 second clip to test your iPhone or iPad.</p>
+    <label for="mode">Processing mode</label>
+    <select id="mode">
+      <option value="compress">Compress / re-encode (best for SDR videos)</option>
+      <option value="original">Keep original unchanged (HDR / Dolby Vision safe)</option>
+    </select>
+    <p class="hint">For Dolby Vision/HDR, choose “Keep original unchanged” to preserve the exact recorded file and its metadata. This does not reduce file size. Re-encoding Dolby Vision in this browser tool is not guaranteed to preserve HDR or Dolby Vision metadata.</p>
+    <div class="grid">
+      <div><label for="size">Output size</label><select id="size"><option value="keep">Keep original dimensions (recommended)</option><option value="1080">Fit within 1080p</option><option value="vertical">Vertical 1080 × 1920 (crop)</option></select></div>
+      <div><label for="fps">Frame rate</label><select id="fps"><option value="keep">Keep source FPS</option><option value="30">30 FPS</option><option value="60">60 FPS</option></select></div>
+      <div><label for="quality">Video quality</label><select id="quality"><option value="high">Very high (CRF 16)</option><option value="max">Near-master (CRF 14, larger file)</option><option value="balanced">High (CRF 18)</option></select></div>
+      <div><label for="audio">Audio bitrate</label><select id="audio"><option value="192k">192 kbps</option><option value="256k">256 kbps</option><option value="320k">320 kbps</option></select></div>
+    </div>
+    <p class="hint">H.264 MP4 + AAC audio for broad compatibility. Re-encoding always loses some information; a lower CRF usually means better quality and a larger file. “Vertical crop” fills a 9:16 frame and may cut off the sides.</p>
+    <button id="go" disabled>Load encoder and compress</button>
+    <progress id="progress" value="0" max="100" hidden></progress>
+    <p id="status" role="status">Choose a video to begin.</p>
+  </div>
+  <div class="panel" id="result" hidden>
+    <h2>2. Your export</h2>
+    <p id="resultInfo"></p>
+    <a id="download" href="#" download="social-hd.mp4">Download MP4</a>
+    <video id="preview" controls playsinline></video>
+    <p class="hint">On iPhone/iPad, tap Download and use the Share button to Save Video or Save to Files. Check the saved file before deleting your original.</p>
+  </div>
+  <p class="warning">Important: keep this page open while it works. Large 4K videos can be slow or fail because of iPhone/iPad memory limits. This page does not guarantee any platform will preserve the exact exported quality.</p>
+  <p class="hint">Encoder: FFmpeg.wasm. First use requires internet to load the encoder files. This page needs to be hosted on an HTTPS website; opening the HTML directly from Files may not work in Safari.</p>
+</main>
+<script type="module">
+import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+import { toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
+
+const $ = id => document.getElementById(id);
+const fileInput = $('file'), go = $('go'), status = $('status'), progress = $('progress');
+let ffmpeg = null, inputFile = null, outputUrl = null, busy = false;
+
+function bytes(n){if(!Number.isFinite(n))return 'unknown size';const u=['B','KB','MB','GB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${n.toFixed(i?1:0)} ${u[i]}`}
+fileInput.addEventListener('change',()=>{
+  inputFile=fileInput.files?.[0]||null;
+  $('fileInfo').textContent=inputFile?`${inputFile.name} · ${bytes(inputFile.size)} · ${inputFile.type||'video file'}`:'Tip: start with a short 10–30 second clip to test your device.';
+  go.disabled=!inputFile||busy;
+  $('result').hidden=true;
+  status.textContent=inputFile?'Ready. Choose settings, then tap compress.':'Choose a video to begin.';
+});
+function setStatus(s){status.textContent=s}
+async function initFFmpeg(){
+  if(ffmpeg)return;
+  ffmpeg=new FFmpeg();
+  ffmpeg.on('log',({message})=>{ if(/error|failed/i.test(message)) setStatus('Encoder: '+message); });
+  ffmpeg.on('progress',({progress:p})=>{if(Number.isFinite(p)){progress.hidden=false;progress.value=Math.max(0,Math.min(100,p*100));}});
+  setStatus('Loading video encoder… keep Safari open. The first load may take a while.');
+  const base='https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+  const coreURL=await toBlobURL(`${base}/ffmpeg-core.js`,'text/javascript');
+  const wasmURL=await toBlobURL(`${base}/ffmpeg-core.wasm`,'application/wasm');
+  await ffmpeg.load({coreURL,wasmURL});
+}
+go.addEventListener('click',async()=>{
+ if(!inputFile||busy)return;
+ busy=true;go.disabled=true;progress.hidden=false;progress.value=0;
+ let inName='input-video',outName='social-hd.mp4';
+ try{
+  if ($('mode').value === 'original') {
+    setStatus('Preparing an unchanged copy of your original video…');
+    const blob = new Blob([await inputFile.arrayBuffer()], {type: inputFile.type || 'application/octet-stream'});
+    if(outputUrl)URL.revokeObjectURL(outputUrl);
+    outputUrl=URL.createObjectURL(blob);
+    const originalName = inputFile.name || 'original-video';
+    $('download').href=outputUrl;
+    $('download').download=originalName;
+    $('preview').src=outputUrl;
+    $('resultInfo').textContent=`Original file copied unchanged: ${bytes(inputFile.size)}. No re-encoding was performed, so the recorded Dolby Vision/HDR data and metadata are not altered by this tool.`;
+    $('result').hidden=false;
+    setStatus('Ready. Download the unchanged original below.');
+    return;
+  }
+  await initFFmpeg();
+  setStatus('Reading video into browser memory…');
+  await ffmpeg.writeFile(inName,new Uint8Array(await inputFile.arrayBuffer()));
+  const args=['-i',inName,'-map','0:v:0','-map','0:a:0?','-c:v','libx264','-preset','slow','-crf',
+    ({max:'14',high:'16',balanced:'18'})[$('quality').value],
+    '-pix_fmt','yuv420p','-c:a','aac','-b:a',$('audio').value,'-movflags','+faststart'];
+  const size=$('size').value, fps=$('fps').value;
+  if(size==='1080') args.push('-vf',"scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2");
+  if(size==='vertical') args.push('-vf',"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920");
+  if(fps!=='keep')args.push('-r',fps);
+  args.push(outName);
+  setStatus('Compressing… this may take several minutes. Keep this page open.');
+  const code=await ffmpeg.exec(args);
+  if(code!==0)throw new Error('FFmpeg could not encode this file. Try a shorter clip or “Keep original dimensions”.');
+  const data=await ffmpeg.readFile(outName);
+  const blob=new Blob([data.buffer],{type:'video/mp4'});
+  if(outputUrl)URL.revokeObjectURL(outputUrl);
+  outputUrl=URL.createObjectURL(blob);
+  $('download').href=outputUrl;$('download').download=`${inputFile.name.replace(/\.[^.]+$/,'')}-social-hd.mp4`;
+  $('preview').src=outputUrl;
+  $('resultInfo').textContent=`Original: ${bytes(inputFile.size)} · Export: ${bytes(blob.size)} · ${blob.size<inputFile.size?'Smaller file':'Larger file'} — compare playback before posting.`;
+  $('result').hidden=false;setStatus('Finished! Download the MP4 below.');
+  try{await ffmpeg.deleteFile(inName);await ffmpeg.deleteFile(outName)}catch{}
+ }catch(e){
+  console.error(e);setStatus('Could not finish: '+(e?.message||String(e))+'\nTry a shorter video, close other Safari tabs, or use a lower resolution. Your original file is unchanged.');
+ }finally{busy=false;go.disabled=!inputFile;progress.hidden=true}
+});
+</script>
+</body>
+</html>
